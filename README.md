@@ -5,3 +5,6 @@ Required manifacturer files:
 * PcLab2000LT.exe with associated DLLs (oscilloscope GUI)
 
 contained in https://www.vellemanusa.com/downloads/files/downloads/pcsgu250_dll_rev1.zip
+
+Example of process:
+![Program console screenshot](./PCSGU250_saver_256.png)
