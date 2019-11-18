@@ -83,7 +83,7 @@ namespace PCSGU250_saver
                 return strs[iMin];
             }
 
-            public void UpdateFileName(DateTime firstTime, string dir)
+            public void UpdateCfgAndFileName(DateTime firstTime, string dir)
             {
                 int F = dataBuf[iBuf_Freq_Hz];
                 int V = dataBuf[iBuf_Volt_mV];
@@ -110,6 +110,7 @@ namespace PCSGU250_saver
                 sb.AppendLine();
                 try { File.AppendAllText(FileName, sb.ToString(), Encoding.ASCII); }
                 catch { Console.WriteLine($"#{Ch}: ERROR SAVING TO FILE: {FileName}"); }
+                sb.Clear();
                 firstRow = false;
             }
 
@@ -142,7 +143,7 @@ namespace PCSGU250_saver
         static void Main(string[] args)
         {
             Console.WriteLine("START receiving data from PCSGU250.");
-            const string HelpMsg = "Press [Esc] to stop and exit, [Space] to start/pause recording.";
+            const string HelpMsg = "***** Press [Esc] to stop and exit, [Space] to start/pause recording.";
             Console.WriteLine(HelpMsg);
 
             var sw = new Stopwatch();
@@ -164,7 +165,7 @@ namespace PCSGU250_saver
                     else if (k == ConsoleKey.Spacebar)
                     {
                         REC = !REC;
-                        Console.WriteLine(REC ? "Recording started!" : "Recording paused...");
+                        Console.WriteLine(REC ? "***** Recording STARTED" : "***** Recording PAUSED...");
                         if (REC) { ch1.Stop(); ch2.Stop(); }
                     }
                     else Console.WriteLine(HelpMsg);
@@ -173,15 +174,23 @@ namespace PCSGU250_saver
                 {
                     nCounts++;
                     var time = DateTime.Now;
+
                     var with1 = ch1.FetchData();
                     var with2 = ch2.FetchData();
-                    bool changed = false;
+
+                    bool needShowCfg = REC && (ch1.FileName == null || ch2.FileName == null);
+
                     if (with1 && ch1.CfgChanged())
-                        changed = true;
+                        needShowCfg = true;
+
                     if (with2 && ch2.CfgChanged())
-                        changed = true;
-                    if (changed)
+                        needShowCfg = true;
+
+                    if (needShowCfg)
                     {
+                        ch1.UpdateCfgAndFileName(time, DirCH1);
+                        ch2.UpdateCfgAndFileName(time, DirCH2);
+
                         int left = "REC 00:00:00.000 ".Length;
                         Console.CursorLeft = left;
                         if (with1)
@@ -209,20 +218,14 @@ namespace PCSGU250_saver
                         ch1.PrintPixels(w);
                         Console.ResetColor();
                         if (REC)
-                        {
-                            if (ch1.FileName == null) ch1.UpdateFileName(time, DirCH1);
                             ch1.SaveDataAsText(time);
-                        }
                     }
                     if (with2)
                     {
                         ch2.PrintPixels(w);
                         Console.ResetColor();
                         if (REC)
-                        {
-                            if (ch2.FileName == null) ch2.UpdateFileName(time, DirCH2);
                             ch2.SaveDataAsText(time);
-                        }
                     }
                     Console.WriteLine();
                 }
@@ -232,7 +235,15 @@ namespace PCSGU250_saver
                 if (currPulse != prevPulse)
                 {
                     if (nCounts == 0)
-                        Console.WriteLine("Press [Run] in PCSGU250 GUI to start sampling...");
+                    {
+                        if (REC)
+                        {
+                            REC = false;
+                            ch1.Stop(); ch2.Stop();
+                            Console.WriteLine("***** Recording autopaused because due to lack of measurements...");
+                        }
+                        Console.WriteLine("***** Press [Run] in PCSGU250 GUI to start sampling...");
+                    }
                     nCounts = 0;
                     prevPulse = currPulse;
                 }
