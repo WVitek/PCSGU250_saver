@@ -43,8 +43,6 @@ namespace PCSGU250_saver
 
             public bool FetchData()
             {
-                for (int i = 0; i < prevCfg.Length; i++) prevCfg[i] = dataBuf[i];
-
                 switch (Ch)
                 {
                     case 1: ReadCh1(ref dataBuf[0]); break;
@@ -66,10 +64,14 @@ namespace PCSGU250_saver
 
             public bool CfgChanged()
             {
+                bool changed = false;
                 for (int i = 0; i < prevCfg.Length; i++)
                     if (prevCfg[i] != dataBuf[i])
-                        return true;
-                return false;
+                    {
+                        prevCfg[i] = dataBuf[i];
+                        changed = true;
+                    }
+                return changed;
             }
 
             static string MinLenStr(params string[] strs)
@@ -87,20 +89,20 @@ namespace PCSGU250_saver
                 int V = dataBuf[iBuf_Volt_mV];
                 int G = dataBuf[iBuf_GndLevel_ADCcounts];
                 var sF = MinLenStr($"{F}Hz", $"{F * 0.001}kHz", $"{F * 0.000001}MHz");
-                var sV = MinLenStr($"{V}mV", $"{F * 0.001}V");
+                var sV = MinLenStr($"{V}mV", $"{V * 0.001}V");
                 CfgStr = (G > 0)
-                    ? $"#{Ch},F={sF},V={sV},nGND={G}"
-                    : $"#{Ch},F={sF},V={sV}";
-                FileName = Path.Combine(dir, $"{firstTime:yyyyMMdd_HHmm} {CfgStr}.tsv.txt");
+                    ? $"#{Ch}_F={sF}_V={sV}_nGND={G}"
+                    : $"#{Ch}_F={sF}_V={sV}";
+                FileName = Path.Combine(dir, $"{firstTime:yyyyMMdd_HHmm}_{CfgStr}.tsv.txt");
                 firstRow = true;
             }
 
             public string FileName { get; private set; }
             bool firstRow;
+            StringBuilder sb = new StringBuilder(4096 * 5);
 
             public void SaveDataAsText(DateTime dataTime)
             {
-                var sb = new StringBuilder(4096 * 5);
                 sb.Append(dataTime.ToString("yyyy-MM-dd HH:mm:ss.fff"));
                 sb.Append('\t');
                 for (int i = iBuf_SamplesBeg; i < iBuf_SamplesEnd; i++)
@@ -128,12 +130,14 @@ namespace PCSGU250_saver
                         if (b > max) max = b;
                         sum += b;
                     }
-                    byte avg = (byte)(sum / d);
-                    PixelConsole.WriteHeat(sum / (255f * d));
+                    byte avg = (byte)Math.Round(1f * sum / d);
+                    PixelConsole.WriteHeatByte(avg);
                 }
             }
         }
 
+        const string DirCH1 = "CH1";
+        const string DirCH2 = "CH2";
 
         static void Main(string[] args)
         {
@@ -147,8 +151,8 @@ namespace PCSGU250_saver
             int prevPulse = -1;
             bool REC = false;
 
-            var ch1 = new Channel(1); Directory.CreateDirectory("CH1");
-            var ch2 = new Channel(2); Directory.CreateDirectory("CH2");
+            var ch1 = new Channel(1); Directory.CreateDirectory(DirCH1);
+            var ch2 = new Channel(2); Directory.CreateDirectory(DirCH2);
 
             while (true)
             {
@@ -161,7 +165,7 @@ namespace PCSGU250_saver
                     {
                         REC = !REC;
                         Console.WriteLine(REC ? "Recording started!" : "Recording paused...");
-                        if (!REC) { ch1.Stop(); ch2.Stop(); }
+                        if (REC) { ch1.Stop(); ch2.Stop(); }
                     }
                     else Console.WriteLine(HelpMsg);
                 }
@@ -173,9 +177,9 @@ namespace PCSGU250_saver
                     var with2 = ch2.FetchData();
                     bool changed = false;
                     if (with1 && ch1.CfgChanged())
-                    { changed = true; ch1.UpdateFileName(time, "CH1"); }
+                        changed = true;
                     if (with2 && ch2.CfgChanged())
-                    { changed = true; ch2.UpdateFileName(time, "CH2"); }
+                        changed = true;
                     if (changed)
                     {
                         int left = "REC 00:00:00.000 ".Length;
@@ -204,13 +208,21 @@ namespace PCSGU250_saver
                     {
                         ch1.PrintPixels(w);
                         Console.ResetColor();
-                        if (REC) ch1.SaveDataAsText(time);
+                        if (REC)
+                        {
+                            if (ch1.FileName == null) ch1.UpdateFileName(time, DirCH1);
+                            ch1.SaveDataAsText(time);
+                        }
                     }
                     if (with2)
                     {
                         ch2.PrintPixels(w);
                         Console.ResetColor();
-                        if (REC) ch2.SaveDataAsText(time);
+                        if (REC)
+                        {
+                            if (ch2.FileName == null) ch2.UpdateFileName(time, DirCH2);
+                            ch2.SaveDataAsText(time);
+                        }
                     }
                     Console.WriteLine();
                 }
@@ -231,6 +243,56 @@ namespace PCSGU250_saver
 
     static class PixelConsole
     {
+        #region Code sourced from https://stackoverflow.com/questions/33538527/display-a-image-in-a-console-application authored by https://stackoverflow.com/users/4959221/anton%c3%adn-lejsek
+
+        static readonly int[] cColors = { 0x000000, 0x000080, 0x008000, 0x008080, 0x800000, 0x800080, 0x808000, 0xC0C0C0, 0x808080, 0x0000FF, 0x00FF00, 0x00FFFF, 0xFF0000, 0xFF00FF, 0xFFFF00, 0xFFFFFF };
+        static readonly Color[] cTable = cColors.Select(x => Color.FromArgb(x)).ToArray();
+        static readonly char[] rList = new char[] { (char)9617, (char)9618, (char)9619, (char)9608 }; // 1/4, 2/4, 3/4, 4/4
+
+        public struct ScoreHit
+        {
+            public int ForeColor, BackColor, Symbol, Score;
+            public void Write()
+            {
+                Console.ForegroundColor = (ConsoleColor)ForeColor;
+                Console.BackgroundColor = (ConsoleColor)BackColor;
+                Console.Write(rList[Symbol - 1]);
+            }
+        }
+
+        public static ScoreHit GetScoreHit(Color cValue)
+        {
+            var bestHit = new ScoreHit() { Symbol = 4, Score = int.MaxValue };
+
+            for (int rChar = rList.Length; rChar > 0; rChar--)
+            {
+                for (int cFore = 0; cFore < cTable.Length; cFore++)
+                {
+                    for (int cBack = 0; cBack < cTable.Length; cBack++)
+                    {
+                        int R = (cTable[cFore].R * rChar + cTable[cBack].R * (rList.Length - rChar)) / rList.Length;
+                        int G = (cTable[cFore].G * rChar + cTable[cBack].G * (rList.Length - rChar)) / rList.Length;
+                        int B = (cTable[cFore].B * rChar + cTable[cBack].B * (rList.Length - rChar)) / rList.Length;
+                        int iScore = (cValue.R - R) * (cValue.R - R) + (cValue.G - G) * (cValue.G - G) + (cValue.B - B) * (cValue.B - B);
+                        if (!(rChar > 1 && rChar < 4 && iScore > 50000)) // rule out too weird combinations
+                        {
+                            if (iScore < bestHit.Score)
+                            {
+                                bestHit.Score = iScore;
+                                bestHit.ForeColor = cFore;
+                                bestHit.BackColor = cBack;
+                                bestHit.Symbol = rChar;
+                            }
+                        }
+                    }
+                }
+            }
+            return bestHit;
+        }
+
+        public static void Write(Color cValue) => GetScoreHit(cValue).Write();
+        #endregion
+
         static readonly Color[] ColorsOfMap = new Color[] {
             Color.FromArgb(0, 0, 0) ,//Black
             Color.FromArgb(0, 0, 0xFF) ,//Blue
@@ -243,6 +305,9 @@ namespace PCSGU250_saver
 
         static Color GetHeatColor(float fraction)
         {
+            if (fraction >= 1f)
+                return ColorsOfMap[ColorsOfMap.Length - 1];
+
             double colorPerc = 1d / (ColorsOfMap.Length - 1);// % of each block of color. the last is the "100% Color"
             double blockOfColor = fraction / colorPerc;// the integer part repersents how many block to skip
             int blockIdx = (int)Math.Truncate(blockOfColor);// Idx of 
@@ -250,7 +315,7 @@ namespace PCSGU250_saver
             double percOfColor = valPercResidual / colorPerc;// % of color of this block that will be filled
 
             Color cTarget = ColorsOfMap[blockIdx];
-            Color cNext = cNext = ColorsOfMap[blockIdx + 1];
+            Color cNext = ColorsOfMap[blockIdx + 1];
 
             var deltaR = cNext.R - cTarget.R;
             var deltaG = cNext.G - cTarget.G;
@@ -266,42 +331,18 @@ namespace PCSGU250_saver
             return c;
         }
 
-        public static void WriteHeat(float fraction) => Write(GetHeatColor(fraction));
+        static readonly ScoreHit[] HeatPixelMap;
 
-        static readonly int[] cColors = { 0x000000, 0x000080, 0x008000, 0x008080, 0x800000, 0x800080, 0x808000, 0xC0C0C0, 0x808080, 0x0000FF, 0x00FF00, 0x00FFFF, 0xFF0000, 0xFF00FF, 0xFFFF00, 0xFFFFFF };
-        static readonly Color[] cTable = cColors.Select(x => Color.FromArgb(x)).ToArray();
-        static readonly char[] rList = new char[] { (char)9617, (char)9618, (char)9619, (char)9608 }; // 1/4, 2/4, 3/4, 4/4
+        public static void WriteHeatByte(byte fraction) => HeatPixelMap[fraction].Write();
 
-        public static void Write(Color cValue)
+
+        static PixelConsole()
         {
-            int[] bestHit = new int[] { 0, 0, 4, int.MaxValue }; //ForeColor, BackColor, Symbol, Score
+            const float coeff = 1f / 255;
 
-            for (int rChar = rList.Length; rChar > 0; rChar--)
-            {
-                for (int cFore = 0; cFore < cTable.Length; cFore++)
-                {
-                    for (int cBack = 0; cBack < cTable.Length; cBack++)
-                    {
-                        int R = (cTable[cFore].R * rChar + cTable[cBack].R * (rList.Length - rChar)) / rList.Length;
-                        int G = (cTable[cFore].G * rChar + cTable[cBack].G * (rList.Length - rChar)) / rList.Length;
-                        int B = (cTable[cFore].B * rChar + cTable[cBack].B * (rList.Length - rChar)) / rList.Length;
-                        int iScore = (cValue.R - R) * (cValue.R - R) + (cValue.G - G) * (cValue.G - G) + (cValue.B - B) * (cValue.B - B);
-                        if (!(rChar > 1 && rChar < 4 && iScore > 50000)) // rule out too weird combinations
-                        {
-                            if (iScore < bestHit[3])
-                            {
-                                bestHit[3] = iScore; //Score
-                                bestHit[0] = cFore;  //ForeColor
-                                bestHit[1] = cBack;  //BackColor
-                                bestHit[2] = rChar;  //Symbol
-                            }
-                        }
-                    }
-                }
-            }
-            Console.ForegroundColor = (ConsoleColor)bestHit[0];
-            Console.BackgroundColor = (ConsoleColor)bestHit[1];
-            Console.Write(rList[bestHit[2] - 1]);
+            HeatPixelMap = new ScoreHit[256];
+            for (int i = 0; i < HeatPixelMap.Length; i++)
+                HeatPixelMap[i] = GetScoreHit(GetHeatColor(i * coeff));
         }
     }
 }
