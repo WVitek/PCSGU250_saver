@@ -31,7 +31,7 @@ namespace PCSGU250_saver
         const int iBuf_SamplesEnd = iBuf_SamplesBeg + nBuf_Samples;
         const int iBuf_TrigPoint = 1018;
 
-        class Channel
+        class Channel : IDisposable
         {
             public int Ch { get; private set; }
 
@@ -56,7 +56,7 @@ namespace PCSGU250_saver
                 return false;
             }
 
-            public void Stop()
+            public void Cleanup()
             {
                 for (int i = 0; i < prevCfg.Length; i++) prevCfg[i] = 0;
                 FileName = null;
@@ -83,7 +83,9 @@ namespace PCSGU250_saver
                 return strs[iMin];
             }
 
-            public void UpdateCfgAndFileName(DateTime firstTime, string dir)
+            const string sRawExt = "raw";
+            const string sTxtExt = "tsv.txt";
+            public void UpdateCfgAndFileName(DateTime firstTime, string dir, FmtKind fmtKind)
             {
                 int F = dataBuf[iBuf_Freq_Hz];
                 int V = dataBuf[iBuf_Volt_mV];
@@ -94,13 +96,44 @@ namespace PCSGU250_saver
                     ? $"#{Ch}_F={sF}_V={sV}_nGND={G}"
                     : $"#{Ch}_F={sF}_V={sV}";
                 Directory.CreateDirectory(dir);
-                FileName = Path.Combine(dir, $"{firstTime:yyyyMMdd_HHmm}_{CfgStr}.tsv.txt");
+                var ext = (fmtKind == FmtKind.RAW) ? sRawExt : sTxtExt;
+                FileName = Path.Combine(dir, $"{firstTime:yyyyMMdd_HHmmss}_{CfgStr}.{ext}");
                 firstRow = true;
             }
 
             public string FileName { get; private set; }
+
             bool firstRow;
             StringBuilder sb = new StringBuilder(4096 * 5);
+
+            // raw data stream and writer
+            FileStream fs = null;
+            BinaryWriter bw = null;
+
+            public void SaveData(DateTime dataTime)
+            {
+                if (FileName.EndsWith(sRawExt))
+                    SaveDataAsRaw(dataTime);
+                else
+                    SaveDataAsText(dataTime);
+            }
+
+            void SaveDataAsRaw(DateTime dataTime)
+            {
+                if (fs != null && fs.Name != FileName)
+                { bw.Close(); fs = null; bw = null; } // close binary writer if file changed
+
+                if (fs == null)
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(FileName));
+                    fs = new FileStream(FileName, FileMode.Append, FileAccess.Write, FileShare.Read);
+                    bw = new BinaryWriter(fs);
+                }
+
+                bw.Write(dataTime.ToOADate()); // 8-byte "Excel-style" local datetime
+                for (int i = iBuf_SamplesBeg; i < iBuf_SamplesEnd; i++)
+                    bw.Write((byte)dataBuf[i]);
+            }
 
             void AddHeader()
             {
@@ -119,8 +152,10 @@ namespace PCSGU250_saver
                 sb.AppendLine();
             }
 
-            public void SaveDataAsText(DateTime dataTime)
+            void SaveDataAsText(DateTime dataTime)
             {
+                if (fs != null) { bw.Close(); fs = null; bw = null; } // close binary writer if needed
+
                 int n = 2;
                 while (n > 0)
                 {
@@ -164,15 +199,23 @@ namespace PCSGU250_saver
                     PixelConsole.WriteHeatByte(avg);
                 }
             }
+
+            public void Dispose()
+            {
+                if (fs != null)
+                { bw.Close(); fs = null; bw = null; };
+            }
         }
 
         const string DirCH1 = "CH1";
         const string DirCH2 = "CH2";
 
+        enum FmtKind { TXT, RAW };
+
         static void Main(string[] args)
         {
             Console.WriteLine("START receiving data from PCSGU250.");
-            const string HelpMsg = "***** Press [Esc] to stop and exit, [Space] to start/pause recording.";
+            const string HelpMsg = "***** Press [Esc] to stop and exit, [Enter] to start/pause .TSV.TXT recording, [Space] to start/pause .RAW recording.";
             Console.WriteLine(HelpMsg);
 
             var sw = new Stopwatch();
@@ -180,101 +223,112 @@ namespace PCSGU250_saver
             sw.Start();
             int prevPulse = -1;
             bool REC = false;
+            var fmtKind = FmtKind.RAW;
 
-            var ch1 = new Channel(1);
-            var ch2 = new Channel(2);
-
-            while (true)
+            using (var ch1 = new Channel(1))
+            using (var ch2 = new Channel(2))
             {
-                if (Console.KeyAvailable)
+                while (true)
                 {
-                    var k = Console.ReadKey(true).Key;
-                    if (k == ConsoleKey.Escape)
-                        break;
-                    else if (k == ConsoleKey.Spacebar)
+                    if (Console.KeyAvailable)
                     {
-                        REC = !REC;
-                        Console.WriteLine(REC ? "***** Recording STARTED" : "***** Recording PAUSED...");
-                        if (REC) { ch1.Stop(); ch2.Stop(); }
+                        var k = Console.ReadKey(true).Key;
+                        if (k == ConsoleKey.Escape)
+                            break;
+                        else if (k == ConsoleKey.Spacebar || k == ConsoleKey.Enter)
+                        {
+                            if (REC)
+                                Console.WriteLine($"***** Recording PAUSED...");
+                            REC = !REC;
+                            fmtKind = (k == ConsoleKey.Spacebar) ? FmtKind.RAW : FmtKind.TXT;
+                            if (REC)
+                            {
+                                ch1.Cleanup(); ch2.Cleanup();
+                                Console.WriteLine($"***** Recording {fmtKind} STARTED...");
+                            }
+                        }
+                        else Console.WriteLine(HelpMsg);
                     }
-                    else Console.WriteLine(HelpMsg);
-                }
-                if (DataReady())
-                {
-                    nCounts++;
-                    var time = DateTime.Now;
-
-                    var with1 = ch1.FetchData();
-                    var with2 = ch2.FetchData();
-
-                    bool needShowCfg = REC && (ch1.FileName == null || ch2.FileName == null);
-
-                    if (with1 && ch1.CfgChanged())
-                        needShowCfg = true;
-
-                    if (with2 && ch2.CfgChanged())
-                        needShowCfg = true;
-
-                    if (needShowCfg)
+                    if (DataReady())
                     {
-                        ch1.UpdateCfgAndFileName(time, DirCH1);
-                        ch2.UpdateCfgAndFileName(time, DirCH2);
+                        nCounts++;
+                        var time = DateTime.Now;
 
-                        int left = "REC 00:00:00.000 ".Length;
-                        Console.CursorLeft = left;
+                        var with1 = ch1.FetchData();
+                        var with2 = ch2.FetchData();
+
+                        bool needShowCfg = REC && (ch1.FileName == null || ch2.FileName == null);
+
+                        if (with1 && ch1.CfgChanged())
+                            needShowCfg = true;
+
+                        if (with2 && ch2.CfgChanged())
+                            needShowCfg = true;
+
+                        if (needShowCfg)
+                        {
+                            ch1.UpdateCfgAndFileName(time, DirCH1, fmtKind);
+                            ch2.UpdateCfgAndFileName(time, DirCH2, fmtKind);
+
+                            int left = "REC 00:00:00.000 ".Length;
+                            Console.CursorLeft = left;
+                            if (with1)
+                            {
+                                Console.Write(ch1.CfgStr);
+                                Console.CursorLeft = left + (Console.BufferWidth - 1 - left) / 2;
+                            }
+                            if (with2)
+                                Console.Write(ch2.CfgStr);
+                            Console.WriteLine();
+                        }
+                        if (REC)
+                        {
+                            Console.BackgroundColor = ConsoleColor.DarkRed;
+                            Console.ForegroundColor = ConsoleColor.Yellow;
+                        }
+                        if (REC)
+                            Console.Write(fmtKind);
+                        else
+                            Console.Write("REC");
+                        Console.ResetColor();
+                        Console.Write($" {time:HH:mm:ss.fff} ");
+                        int w = Console.BufferWidth - Console.CursorLeft - 1;
+                        if (with1 && with2)
+                            w /= 2;
                         if (with1)
                         {
-                            Console.Write(ch1.CfgStr);
-                            Console.CursorLeft = left + (Console.BufferWidth - 1 - left) / 2;
+                            ch1.PrintPixels(w);
+                            Console.ResetColor();
+                            if (REC)
+                                ch1.SaveData(time);
                         }
                         if (with2)
-                            Console.Write(ch2.CfgStr);
+                        {
+                            ch2.PrintPixels(w);
+                            Console.ResetColor();
+                            if (REC)
+                                ch2.SaveData(time);
+                        }
                         Console.WriteLine();
                     }
-                    if (REC)
-                    {
-                        Console.BackgroundColor = ConsoleColor.DarkRed;
-                        Console.ForegroundColor = ConsoleColor.Yellow;
-                    }
-                    Console.Write("REC");
-                    Console.ResetColor();
-                    Console.Write($" {time:HH:mm:ss.fff} ");
-                    int w = Console.BufferWidth - Console.CursorLeft - 1;
-                    if (with1 && with2)
-                        w /= 2;
-                    if (with1)
-                    {
-                        ch1.PrintPixels(w);
-                        Console.ResetColor();
-                        if (REC)
-                            ch1.SaveDataAsText(time);
-                    }
-                    if (with2)
-                    {
-                        ch2.PrintPixels(w);
-                        Console.ResetColor();
-                        if (REC)
-                            ch2.SaveDataAsText(time);
-                    }
-                    Console.WriteLine();
-                }
-                else System.Threading.Thread.Sleep(1);
+                    else System.Threading.Thread.Sleep(1);
 
-                int currPulse = (int)(sw.ElapsedMilliseconds >> 14);
-                if (currPulse != prevPulse)
-                {
-                    if (nCounts == 0)
+                    int currPulse = (int)(sw.ElapsedMilliseconds >> 14);
+                    if (currPulse != prevPulse)
                     {
-                        if (REC)
+                        if (nCounts == 0)
                         {
-                            REC = false;
-                            ch1.Stop(); ch2.Stop();
-                            Console.WriteLine("***** Recording autopaused due to lack of measurements...");
+                            if (REC)
+                            {
+                                REC = false;
+                                ch1.Cleanup(); ch2.Cleanup();
+                                Console.WriteLine("***** Recording autopaused due to lack of measurements...");
+                            }
+                            Console.WriteLine("***** Press [Run] in PCSGU250 GUI to start sampling...");
                         }
-                        Console.WriteLine("***** Press [Run] in PCSGU250 GUI to start sampling...");
+                        nCounts = 0;
+                        prevPulse = currPulse;
                     }
-                    nCounts = 0;
-                    prevPulse = currPulse;
                 }
             }
             Console.WriteLine("STOP receiving data from PCSGU250.");
