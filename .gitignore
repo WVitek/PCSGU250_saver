@@ -343,3 +343,5 @@ healthchecksdb
 /pcgu250.bit
 /mpusbapi.dll
 /FASTTime32.dll
+/Driver
+/PCSGU250_saver.exe

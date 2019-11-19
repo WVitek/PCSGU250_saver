@@ -93,6 +93,7 @@ namespace PCSGU250_saver
                 CfgStr = (G > 0)
                     ? $"#{Ch}_F={sF}_V={sV}_nGND={G}"
                     : $"#{Ch}_F={sF}_V={sV}";
+                Directory.CreateDirectory(dir);
                 FileName = Path.Combine(dir, $"{firstTime:yyyyMMdd_HHmm}_{CfgStr}.tsv.txt");
                 firstRow = true;
             }
@@ -101,16 +102,44 @@ namespace PCSGU250_saver
             bool firstRow;
             StringBuilder sb = new StringBuilder(4096 * 5);
 
+            void AddHeader()
+            {
+                var F = dataBuf[iBuf_Freq_Hz];
+                sb.Append($"Channel=\t{Ch}\t");
+                sb.Append($"Fmax[Hz]=\t{F}\t");
+                sb.Append($"Vmax[mV]=\t{dataBuf[iBuf_Volt_mV]}\t");
+                sb.Append($"nGND=\t{dataBuf[iBuf_GndLevel_ADCcounts]}");
+                sb.AppendLine();
+
+                sb.AppendLine("\t\tFrequency bandwidths");
+
+                sb.Append("Time\tms");
+                for (int i = 0; i < nBuf_Samples; i++)
+                    sb.AppendFormat("\t{0:0.###}", F / 4096f * (i + 1));
+                sb.AppendLine();
+            }
+
             public void SaveDataAsText(DateTime dataTime)
             {
-                sb.Append(dataTime.ToString("yyyy-MM-dd HH:mm:ss.fff"));
-                sb.Append('\t');
-                for (int i = iBuf_SamplesBeg; i < iBuf_SamplesEnd; i++)
-                { sb.Append('\t'); sb.Append(dataBuf[i]); }
-                sb.AppendLine();
-                try { File.AppendAllText(FileName, sb.ToString(), Encoding.ASCII); }
-                catch { Console.WriteLine($"#{Ch}: ERROR SAVING TO FILE: {FileName}"); }
-                sb.Clear();
+                int n = 2;
+                while (n > 0)
+                {
+                    if (firstRow)
+                        AddHeader();
+                    sb.Append($"{dataTime:yyyy-MM-dd HH:mm:ss}\t{dataTime:fff}");
+                    for (int i = iBuf_SamplesBeg; i < iBuf_SamplesEnd; i++)
+                    { sb.Append('\t'); sb.Append(dataBuf[i]); }
+                    sb.AppendLine();
+                    try
+                    { File.AppendAllText(FileName, sb.ToString(), Encoding.ASCII); break; }
+                    catch (DirectoryNotFoundException)
+                    { Directory.CreateDirectory(Path.GetDirectoryName(FileName)); firstRow = true; }
+                    catch
+                    { Console.WriteLine($"#{Ch}: ERROR SAVING TO FILE: {FileName}"); break; }
+                    finally
+                    { sb.Clear(); }
+                    n--;
+                }
                 firstRow = false;
             }
 
@@ -152,8 +181,8 @@ namespace PCSGU250_saver
             int prevPulse = -1;
             bool REC = false;
 
-            var ch1 = new Channel(1); Directory.CreateDirectory(DirCH1);
-            var ch2 = new Channel(2); Directory.CreateDirectory(DirCH2);
+            var ch1 = new Channel(1);
+            var ch2 = new Channel(2);
 
             while (true)
             {
@@ -240,7 +269,7 @@ namespace PCSGU250_saver
                         {
                             REC = false;
                             ch1.Stop(); ch2.Stop();
-                            Console.WriteLine("***** Recording autopaused because due to lack of measurements...");
+                            Console.WriteLine("***** Recording autopaused due to lack of measurements...");
                         }
                         Console.WriteLine("***** Press [Run] in PCSGU250 GUI to start sampling...");
                     }
