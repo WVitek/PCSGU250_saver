@@ -95,9 +95,9 @@ namespace PCSGU250_saver
                 CfgStr = (G > 0)
                     ? $"#{Ch}_F={sF}_V={sV}_nGND={G}"
                     : $"#{Ch}_F={sF}_V={sV}";
-                Directory.CreateDirectory(dir);
+                //Directory.CreateDirectory(dir);
                 var ext = (fmtKind == FmtKind.RAW) ? sRawExt : sTxtExt;
-                FileName = Path.Combine(dir, $"{firstTime:yyyyMMdd_HHmmss}_{CfgStr}.{ext}");
+                FileName = Path.GetFullPath(Path.Combine(dir, $"{firstTime:yyyyMMdd_HHmmss}_{CfgStr}.{ext}"));
                 firstRow = true;
             }
 
@@ -106,9 +106,19 @@ namespace PCSGU250_saver
             bool firstRow;
             StringBuilder sb = new StringBuilder(4096 * 5);
 
+            /// <summary>
+            /// Number of records written to current raw file
+            /// </summary>
+            int nRawRecs;
+
             // raw data stream and writer
             FileStream fs = null;
             BinaryWriter bw = null;
+
+            /// <summary>
+            /// safely close file writer
+            /// </summary>
+            public void CloseFile() { if (fs == null) return; bw.Close(); fs = null; bw = null; nRawRecs = 0; }
 
             public void SaveData(DateTime dataTime)
             {
@@ -120,8 +130,18 @@ namespace PCSGU250_saver
 
             void SaveDataAsRaw(DateTime dataTime)
             {
-                if (fs != null && fs.Name != FileName)
-                { bw.Close(); fs = null; bw = null; } // close binary writer if file changed
+                if (fs != null)
+                {
+                    if (fs.Name != FileName)
+                        CloseFile(); // target file changed, close previous
+                    else if (nRawRecs >= 3600 * 3)
+                    {
+                        CloseFile();
+                        var fmtKind = FileName.EndsWith(sRawExt) ? FmtKind.RAW : FmtKind.TXT;
+                        var dir = Path.GetDirectoryName(FileName);
+                        UpdateCfgAndFileName(dataTime, dir, fmtKind);
+                    }
+                }
 
                 if (fs == null)
                 {
@@ -130,6 +150,7 @@ namespace PCSGU250_saver
                     bw = new BinaryWriter(fs);
                 }
 
+                nRawRecs++;
                 bw.Write(dataTime.ToOADate()); // 8-byte "Excel-style" local datetime
                 for (int i = iBuf_SamplesBeg; i < iBuf_SamplesEnd; i++)
                     bw.Write((byte)dataBuf[i]);
@@ -154,7 +175,7 @@ namespace PCSGU250_saver
 
             void SaveDataAsText(DateTime dataTime)
             {
-                if (fs != null) { bw.Close(); fs = null; bw = null; } // close binary writer if needed
+                if (fs != null) CloseFile();
 
                 int n = 2;
                 while (n > 0)
@@ -203,7 +224,7 @@ namespace PCSGU250_saver
             public void Dispose()
             {
                 if (fs != null)
-                { bw.Close(); fs = null; bw = null; };
+                    CloseFile();
             }
         }
 
@@ -215,7 +236,7 @@ namespace PCSGU250_saver
         static void Main(string[] args)
         {
             Console.WriteLine("START receiving data from PCSGU250.");
-            const string HelpMsg = "***** Press [Esc] to stop and exit, [Enter] to start/pause .TSV.TXT recording, [Space] to start/pause .RAW recording.";
+            const string HelpMsg = "***** Press [Esc] to stop and exit, [Enter] to start/pause .TSV.TXT recording, [Space] to start/pause .RAW recording, [1]/[2] to use channel or not.";
             Console.WriteLine(HelpMsg);
 
             var sw = new Stopwatch();
@@ -223,6 +244,8 @@ namespace PCSGU250_saver
             sw.Start();
             int prevPulse = -1;
             bool REC = false;
+            bool Use1 = true;
+            bool Use2 = false;
             var fmtKind = FmtKind.RAW;
 
             using (var ch1 = new Channel(1))
@@ -247,6 +270,16 @@ namespace PCSGU250_saver
                                 Console.WriteLine($"***** Recording {fmtKind} STARTED...");
                             }
                         }
+                        else if (k == ConsoleKey.D1)
+                        {
+                            Use1 = !Use1; ch1.Cleanup(); ch1.CloseFile();
+                            Console.WriteLine("***** CH 1 : " + (Use1 ? "USED" : "NOT USED"));
+                        }
+                        else if (k == ConsoleKey.D2)
+                        {
+                            Use2 = !Use2; ch2.Cleanup(); ch2.CloseFile();
+                            Console.WriteLine("***** CH 2 : " + (Use1 ? "USED" : "NOT USED"));
+                        }
                         else Console.WriteLine(HelpMsg);
                     }
                     if (DataReady())
@@ -254,8 +287,8 @@ namespace PCSGU250_saver
                         nCounts++;
                         var time = DateTime.Now;
 
-                        var with1 = ch1.FetchData();
-                        var with2 = ch2.FetchData();
+                        var with1 = Use1 && ch1.FetchData();
+                        var with2 = Use2 && ch2.FetchData();
 
                         bool needShowCfg = REC && (ch1.FileName == null || ch2.FileName == null);
 
@@ -294,7 +327,7 @@ namespace PCSGU250_saver
                         Console.Write($" {time:HH:mm:ss.fff} ");
                         int w = Console.BufferWidth - Console.CursorLeft - 1;
                         if (with1 && with2)
-                            w /= 2;
+                            w = (w - 1) / 2;
                         if (with1)
                         {
                             ch1.PrintPixels(w);
@@ -304,6 +337,8 @@ namespace PCSGU250_saver
                         }
                         if (with2)
                         {
+                            if (with1)
+                                Console.Write(' ');
                             ch2.PrintPixels(w);
                             Console.ResetColor();
                             if (REC)
